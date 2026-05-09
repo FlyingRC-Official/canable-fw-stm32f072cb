@@ -15,8 +15,13 @@ static CAN_HandleTypeDef can_handle;
 static CAN_FilterTypeDef filter;
 static uint32_t prescaler;
 static can_bus_state_t bus_state = OFF_BUS;
+static uint8_t can_silent = DISABLE;
 static uint8_t can_autoretransmit = ENABLE;
 static can_txbuf_t txqueue = {0};
+
+#define CAN_S_Pin GPIO_PIN_13
+#define CAN_S_Port GPIOC
+#define CAN_S CAN_S_Port, CAN_S_Pin
 
 
 // Initialize CAN peripheral settings, but don't actually start the peripheral
@@ -26,6 +31,16 @@ void can_init(void)
     GPIO_InitTypeDef GPIO_InitStruct;
     __HAL_RCC_CAN1_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+
+    // PC13 ------> TJA1051 S input. Low selects normal high-speed mode.
+    GPIO_InitStruct.Pin = CAN_S_Pin;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Alternate = 0;
+    HAL_GPIO_Init(CAN_S_Port, &GPIO_InitStruct);
+    HAL_GPIO_WritePin(CAN_S, GPIO_PIN_RESET);
 
     //PB8     ------> CAN_RX
     //PB9     ------> CAN_TX
@@ -66,7 +81,7 @@ void can_enable(void)
     if (bus_state == OFF_BUS)
     {
     	can_handle.Init.Prescaler = prescaler;
-    	can_handle.Init.Mode = CAN_MODE_NORMAL;
+    	can_handle.Init.Mode = can_silent ? CAN_MODE_SILENT : CAN_MODE_NORMAL;
 
     	can_handle.Init.SyncJumpWidth = CAN_SJW_1TQ;
     	can_handle.Init.TimeSeg1 = CAN_BS1_4TQ;
@@ -161,9 +176,13 @@ void can_set_silent(uint8_t silent)
     }
     if (silent)
     {
+    	can_silent = ENABLE;
     	can_handle.Init.Mode = CAN_MODE_SILENT;
+        HAL_GPIO_WritePin(CAN_S, GPIO_PIN_SET);
     } else {
+    	can_silent = DISABLE;
     	can_handle.Init.Mode = CAN_MODE_NORMAL;
+        HAL_GPIO_WritePin(CAN_S, GPIO_PIN_RESET);
     }
 
     led_green_on();
@@ -269,4 +288,3 @@ void HAL_CAN_RxFifo0FullCallback(CAN_HandleTypeDef *hcan)
 {
 	error_assert(ERR_CANRXFIFO_OVERFLOW);
 }
-

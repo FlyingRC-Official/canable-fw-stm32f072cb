@@ -13,20 +13,20 @@
 SOURCES = main.c system.c usbd_conf.c usbd_cdc_if.c usb_device.c usbd_desc.c interrupts.c system_stm32f0xx.c can.c slcan.c led.c error.c printf.c
 
 # Get git version and dirty flag
-GIT_VERSION := $(shell git describe --abbrev=7 --dirty --always --tags)
-GIT_REMOTE := $(shell git config --get remote.origin.url | sed 's/^.*github/github/')
+GIT_VERSION := $(shell git describe --abbrev=7 --dirty --always --tags 2>/dev/null || echo f072cb-port)
+GIT_REMOTE := $(shell git config --get remote.origin.url 2>/dev/null | sed 's/^.*github/github/')
 
 # TARGET: name of the user application
-TARGET = canable-$(GIT_VERSION)
+TARGET = stm32f072cb-slcan-$(GIT_VERSION)
 
 # BUILD_DIR: directory to place output files in
 BUILD_DIR = build
 
 # LD_SCRIPT: location of the linker script
-LD_SCRIPT = STM32F042C6_FLASH.ld
+LD_SCRIPT = STM32F072CB_FLASH.ld
 
 # USER_DEFS user defined macros
-USER_DEFS = -D HSI48_VALUE=48000000 -D HSE_VALUE=16000000
+USER_DEFS = -D HSI48_VALUE=48000000 -D HSE_VALUE=8000000
 
 # USER_INCLUDES: user defined includes
 USER_INCLUDES =
@@ -46,7 +46,7 @@ endif
 USER_LDFLAGS = -fno-exceptions -ffunction-sections -fdata-sections -Wl,--gc-sections
 
 # TARGET_DEVICE: device to compile for
-TARGET_DEVICE = STM32F042x6
+TARGET_DEVICE = STM32F072xB
 
 #######################################
 # end of user configuration
@@ -154,7 +154,7 @@ $(USB_BUILD_DIR):
 # list of user program objects
 OBJECTS = $(addprefix $(BUILD_DIR)/,$(notdir $(SOURCES:.c=.o)))
 # add an object for the startup code
-OBJECTS += $(BUILD_DIR)/startup_stm32f042x6.o
+OBJECTS += $(BUILD_DIR)/startup_stm32f072xb.o
 
 # use the periphlib core library, plus generic ones (libc, libm, libnosys)
 LIBS = -lstm32cube -lc -lm -lnosys
