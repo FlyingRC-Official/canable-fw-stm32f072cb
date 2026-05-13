@@ -33,6 +33,7 @@ int main(void)
     while(1)
     {
         cdc_process();
+        cdc_tx_process();
         led_process();
         can_process();
 

@@ -10,7 +10,7 @@
 
 // Private variables
 static volatile usbrx_buf_t rxbuf = {0};
-static uint8_t txbuf[TX_BUF_SIZE];
+static usbtx_buf_t txbuf = {0};
 extern USBD_HandleTypeDef hUsbDeviceFS;
 static uint8_t slcan_str[SLCAN_MTU];
 static uint8_t slcan_str_index = 0;
@@ -39,7 +39,7 @@ USBD_CDC_ItfTypeDef USBD_Interface_fops_FS =
   */
 static int8_t CDC_Init_FS(void)
 {
-  USBD_CDC_SetTxBuffer(&hUsbDeviceFS, txbuf, 0);
+  USBD_CDC_SetTxBuffer(&hUsbDeviceFS, (uint8_t *)txbuf.buf[txbuf.tail], 0);
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, rxbuf.buf[rxbuf.head]);
   return (USBD_OK);
 }
@@ -210,6 +210,8 @@ void cdc_process(void)
 		rxbuf.tail = (rxbuf.tail + 1) % NUM_RX_BUFS;
 	}
 	system_irq_enable();
+
+	cdc_tx_process();
 }
 
 
@@ -225,35 +227,55 @@ void cdc_process(void)
  * @retval Result of the opeartion: USBD_OK if all operations are OK else USBD_FAIL or USBD_BUSY
  */
 
-// TODO: Do some buffering here. Try to transmit 64byte packets.
 uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len)
 {
-    // Attempt to transmit on USB, wait until not busy
-    // Future: implement TX buffering
-    uint32_t start_wait = HAL_GetTick();
-    while( ((USBD_CDC_HandleTypeDef*)hUsbDeviceFS.pClassData)->TxState)
-    {
-      // If no TX within timeout, abort.
-      if(HAL_GetTick() - start_wait >= 10)
-      {
-          error_assert(ERR_USBTX_BUSY);
-          return USBD_BUSY;
-      }
-    }
-
     // Ensure message will fit in buffer
     if(Len > TX_BUF_SIZE)
     {
     	return 0;
     }
 
-    // Copy data into buffer
-    for (uint32_t i=0; i < Len; i++)
+    uint8_t next_head = (txbuf.head + 1) % NUM_TX_BUFS;
+    if(next_head == txbuf.tail)
     {
-    	txbuf[i] = Buf[i];
+        error_assert(ERR_USBTX_BUSY);
+        return USBD_BUSY;
     }
 
-    // Set transmit buffer and start TX
-    USBD_CDC_SetTxBuffer(&hUsbDeviceFS, txbuf, Len);
-    return USBD_CDC_TransmitPacket(&hUsbDeviceFS);
+    // Copy data into the USB TX queue
+    for (uint32_t i=0; i < Len; i++)
+    {
+    	txbuf.buf[txbuf.head][i] = Buf[i];
+    }
+    txbuf.msglen[txbuf.head] = Len;
+    txbuf.head = next_head;
+
+    cdc_tx_process();
+    return USBD_OK;
+}
+
+
+// Start the next queued USB CDC packet if the previous one has completed.
+void cdc_tx_process(void)
+{
+    USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef*)hUsbDeviceFS.pClassData;
+    if(hcdc == 0)
+    {
+        return;
+    }
+
+    if(txbuf.active && (hcdc->TxState == 0U))
+    {
+        txbuf.tail = (txbuf.tail + 1) % NUM_TX_BUFS;
+        txbuf.active = 0;
+    }
+
+    if((!txbuf.active) && (txbuf.tail != txbuf.head))
+    {
+        USBD_CDC_SetTxBuffer(&hUsbDeviceFS, (uint8_t *)txbuf.buf[txbuf.tail], txbuf.msglen[txbuf.tail]);
+        if(USBD_CDC_TransmitPacket(&hUsbDeviceFS) == USBD_OK)
+        {
+            txbuf.active = 1;
+        }
+    }
 }
