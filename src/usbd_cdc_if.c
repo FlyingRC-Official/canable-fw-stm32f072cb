@@ -179,11 +179,17 @@ void cdc_process(void)
 			   int8_t result = slcan_parse_str(slcan_str, slcan_str_index);
 
 			   // Success
-			   //if(result == 0)
-			   //    CDC_Transmit_FS("\n", 1);
+			   if(result == 0)
+			   {
+			       uint8_t ack = '\r';
+			       CDC_Transmit_FS(&ack, 1);
+			   }
 			   // Failure
-			   //else
-			   //    CDC_Transmit_FS("\a", 1);
+			   else
+			   {
+			       uint8_t nack = '\a';
+			       CDC_Transmit_FS(&nack, 1);
+			   }
 
 			   slcan_str_index = 0;
 		   }
