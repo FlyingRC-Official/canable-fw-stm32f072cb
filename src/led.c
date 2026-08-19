@@ -1,101 +1,72 @@
-//
-// LED: Handles blinking of status light
-//
-
-#include "stm32f0xx_hal.h"
+#include "apm32f0xx_gpio.h"
+#include "apm32f0xx_rcm.h"
 #include "led.h"
+#include "system.h"
 
+#define LED_BLUE_PIN GPIO_PIN_0
+#define LED_GREEN_PIN GPIO_PIN_1
+#define LED_RED_PIN GPIO_PIN_2
 
-// Private variables
-static uint32_t led_blue_laston = 0;
-static uint32_t led_green_laston = 0;
-static uint32_t led_blue_lastoff = 0;
-static uint32_t led_green_lastoff = 0;
+static uint32_t blue_last_on;
+static uint32_t green_last_on;
+static uint32_t blue_last_off;
+static uint32_t green_last_off;
 
-
-// Initialize LED GPIOs
-void led_init()
+void led_init(void)
 {
-    __HAL_RCC_GPIOA_CLK_ENABLE();
-    GPIO_InitTypeDef GPIO_InitStruct;
-    GPIO_InitStruct.Pin = LED_BLUE_Pin | LED_GREEN_Pin | LED_RED_Pin;
-    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-    GPIO_InitStruct.Pull = GPIO_PULLUP;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_MEDIUM;
-    GPIO_InitStruct.Alternate = 0;
-    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-    HAL_GPIO_WritePin(LED_BLUE, 1);
-    HAL_GPIO_WritePin(LED_GREEN, 1);
-    HAL_GPIO_WritePin(LED_RED, 1);
+    GPIO_Config_T gpio;
+    RCM_EnableAHBPeriphClock(RCM_AHB_PERIPH_GPIOA);
+    GPIO_ConfigStructInit(&gpio);
+    gpio.pin = LED_BLUE_PIN | LED_GREEN_PIN | LED_RED_PIN;
+    gpio.mode = GPIO_MODE_OUT;
+    gpio.outtype = GPIO_OUT_TYPE_PP;
+    gpio.speed = GPIO_SPEED_10MHz;
+    gpio.pupd = GPIO_PUPD_PU;
+    GPIO_Config(GPIOA, &gpio);
+    GPIO_SetBit(GPIOA, gpio.pin);
 }
 
-
-// Turn green LED on
 void led_green_on(void)
 {
-	// Make sure the LED has been off for at least LED_DURATION before turning on again
-	// This prevents a solid status LED on a busy canbus
-	if(led_green_laston == 0 && HAL_GetTick() - led_green_lastoff > LED_DURATION)
-	{
-        // Invert LED
-		HAL_GPIO_WritePin(LED_GREEN, 0);
-		led_green_laston = HAL_GetTick();
-	}
+    uint32_t now = system_millis();
+    if (green_last_on == 0U && (uint32_t)(now - green_last_off) > LED_DURATION) {
+        GPIO_ClearBit(GPIOA, LED_GREEN_PIN);
+        green_last_on = now;
+    }
 }
 
+void led_green_off(void) { GPIO_SetBit(GPIOA, LED_GREEN_PIN); }
 
-// Turn green LED on
-void led_green_off(void)
-{
-	HAL_GPIO_WritePin(LED_GREEN, 1);
-}
-
-
-// Blink blue LED (blocking)
 void led_blue_blink(uint8_t numblinks)
 {
-	uint8_t i;
-	for(i=0; i<numblinks; i++)
-	{
-		HAL_GPIO_WritePin(LED_BLUE, 0);
-		HAL_Delay(100);
-		HAL_GPIO_WritePin(LED_BLUE, 1);
-		HAL_Delay(100);
-	}
+    for (uint8_t i = 0U; i < numblinks; ++i) {
+        GPIO_ClearBit(GPIOA, LED_BLUE_PIN);
+        system_delay_ms(100U);
+        GPIO_SetBit(GPIOA, LED_BLUE_PIN);
+        system_delay_ms(100U);
+    }
 }
 
-
-// Attempt to turn on status LED
 void led_blue_on(void)
 {
-	// Make sure the LED has been off for at least LED_DURATION before turning on again
-	// This prevents a solid status LED on a busy canbus
-	if(led_blue_laston == 0 && HAL_GetTick() - led_blue_lastoff > LED_DURATION)
-	{
-		HAL_GPIO_WritePin(LED_BLUE, 0);
-		led_blue_laston = HAL_GetTick();
-	}
+    uint32_t now = system_millis();
+    if (blue_last_on == 0U && (uint32_t)(now - blue_last_off) > LED_DURATION) {
+        GPIO_ClearBit(GPIOA, LED_BLUE_PIN);
+        blue_last_on = now;
+    }
 }
 
-
-// Process time-based LED events
 void led_process(void)
 {
-	// If LED has been on for long enough, turn it off
-	if(led_blue_laston > 0 && HAL_GetTick() - led_blue_laston > LED_DURATION)
-	{
-		HAL_GPIO_WritePin(LED_BLUE, 1);
-		led_blue_laston = 0;
-		led_blue_lastoff = HAL_GetTick();
-	}
-
-	// If LED has been on for long enough, turn it off
-	if(led_green_laston > 0 && HAL_GetTick() - led_green_laston > LED_DURATION)
-	{
-        // Invert LED
-		HAL_GPIO_WritePin(LED_GREEN, 1);
-		led_green_laston = 0;
-		led_green_lastoff = HAL_GetTick();
-	}
+    uint32_t now = system_millis();
+    if (blue_last_on != 0U && (uint32_t)(now - blue_last_on) > LED_DURATION) {
+        GPIO_SetBit(GPIOA, LED_BLUE_PIN);
+        blue_last_on = 0U;
+        blue_last_off = now;
+    }
+    if (green_last_on != 0U && (uint32_t)(now - green_last_on) > LED_DURATION) {
+        GPIO_SetBit(GPIOA, LED_GREEN_PIN);
+        green_last_on = 0U;
+        green_last_off = now;
+    }
 }

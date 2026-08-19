@@ -1,8 +1,3 @@
-//
-// slcan: Parse incoming and generate outgoing slcan messages
-//
-
-#include "stm32f0xx_hal.h"
 #include <string.h>
 #include "can.h"
 #include "error.h"
@@ -10,223 +5,116 @@
 #include "printf.h"
 #include "usbd_cdc_if.h"
 
-
-// Parse an incoming CAN frame into an outgoing slcan message
-int8_t slcan_parse_frame(uint8_t *buf, CAN_RxHeaderTypeDef *frame_header, uint8_t* frame_data)
+static uint8_t hex_value(uint8_t c)
 {
-    uint8_t msg_position = 0;
-
-    for (uint8_t j=0; j < SLCAN_MTU; j++)
-    {
-        buf[j] = '\0';
-    }
-
-    // Add character for frame type
-    if (frame_header->RTR == CAN_RTR_DATA)
-    {
-        buf[msg_position] = 't';
-    } else if (frame_header->RTR == CAN_RTR_REMOTE) {
-        buf[msg_position] = 'r';
-    }
-
-    // Assume standard identifier
-    uint8_t id_len = SLCAN_STD_ID_LEN;
-    uint32_t can_id = frame_header->StdId;
-
-    // Check if extended
-    if (frame_header->IDE == CAN_ID_EXT)
-    {
-        // Convert first char to upper case for extended frame
-        buf[msg_position] -= 32;
-        id_len = SLCAN_EXT_ID_LEN;
-        can_id = frame_header->ExtId;
-    }
-    msg_position++;
-
-    // Add identifier to buffer
-    for(uint8_t j = id_len; j > 0; j--)
-    {
-        // Add nybble to buffer
-        buf[j] = (can_id & 0xF);
-        can_id = can_id >> 4;
-        msg_position++;
-    }
-
-    // Add DLC to buffer
-    buf[msg_position++] = frame_header->DLC;
-
-    // Add data bytes
-    for (uint8_t j = 0; j < frame_header->DLC; j++)
-    {
-        buf[msg_position++] = (frame_data[j] >> 4);
-        buf[msg_position++] = (frame_data[j] & 0x0F);
-    }
-
-    // Convert to ASCII (2nd character to end)
-    for (uint8_t j = 1; j < msg_position; j++)
-    {
-        if (buf[j] < 0xA) {
-            buf[j] += 0x30;
-        } else {
-            buf[j] += 0x37;
-        }
-    }
-
-    // Add CR (slcan EOL)
-    buf[msg_position++] = '\r';
-
-    // Return number of bytes in string
-    return msg_position;
+    if (c >= '0' && c <= '9') return (uint8_t)(c - '0');
+    if (c >= 'A' && c <= 'F') return (uint8_t)(c - 'A' + 10U);
+    if (c >= 'a' && c <= 'f') return (uint8_t)(c - 'a' + 10U);
+    return 0xFFU;
 }
 
+static uint8_t hex_digit(uint8_t value)
+{
+    if (value < 10U) return (uint8_t)('0' + value);
+    return (uint8_t)('A' + (value - 10U));
+}
 
-// Parse an incoming slcan command from the USB CDC port
+int8_t slcan_parse_frame(uint8_t *buf, const can_frame_t *frame)
+{
+    uint8_t pos = 0U;
+    uint8_t id_len;
+
+    if (buf == NULL || frame == NULL || frame->dlc > 8U) return -1;
+
+    buf[pos++] = frame->is_extended
+        ? (frame->is_remote ? 'R' : 'T')
+        : (frame->is_remote ? 'r' : 't');
+    id_len = frame->is_extended ? SLCAN_EXT_ID_LEN : SLCAN_STD_ID_LEN;
+    for (uint8_t i = 0U; i < id_len; ++i) {
+        uint8_t shift = (uint8_t)((id_len - i - 1U) * 4U);
+        buf[pos++] = hex_digit((uint8_t)((frame->id >> shift) & 0x0FU));
+    }
+    buf[pos++] = hex_digit(frame->dlc);
+    if (!frame->is_remote) {
+        for (uint8_t i = 0U; i < frame->dlc; ++i) {
+            buf[pos++] = hex_digit((uint8_t)(frame->data[i] >> 4));
+            buf[pos++] = hex_digit((uint8_t)(frame->data[i] & 0x0FU));
+        }
+    }
+    buf[pos++] = '\r';
+    return (int8_t)pos;
+}
+
 int8_t slcan_parse_str(uint8_t *buf, uint8_t len)
 {
-	CAN_TxHeaderTypeDef frame_header;
+    can_frame_t frame = {0};
+    uint8_t id_len;
+    uint8_t pos;
 
-	// Default to standard ID unless otherwise specified
-	frame_header.IDE = CAN_ID_STD;
-    frame_header.StdId = 0;
-    frame_header.ExtId = 0;
+    if (buf == NULL || len == 0U) return -1;
 
-
-    // Convert from ASCII (2nd character to end)
-    for (uint8_t i = 1; i < len; i++)
-    {
-        // Lowercase letters
-        if(buf[i] >= 'a')
-            buf[i] = buf[i] - 'a' + 10;
-        // Uppercase letters
-        else if(buf[i] >= 'A')
-            buf[i] = buf[i] - 'A' + 10;
-        // Numbers
-        else
-            buf[i] = buf[i] - '0';
+    switch (buf[0]) {
+        case 'O': can_enable(); return 0;
+        case 'C': can_disable(); return 0;
+        case 'S':
+            if (len != 2U) return -1;
+            pos = hex_value(buf[1]);
+            if (pos >= CAN_BITRATE_INVALID) return -1;
+            can_set_bitrate((can_bitrate_t)pos);
+            return 0;
+        case 'm':
+        case 'M':
+            if (len != 2U) return -1;
+            pos = hex_value(buf[1]);
+            if (pos > 1U) return -1;
+            can_set_silent(pos);
+            return 0;
+        case 'a':
+        case 'A':
+            if (len != 2U) return -1;
+            pos = hex_value(buf[1]);
+            if (pos > 1U) return -1;
+            can_set_autoretransmit(pos);
+            return 0;
+        case 'V': {
+            static const char fw_id[] = GIT_VERSION " " GIT_REMOTE "\r";
+            CDC_Transmit_FS((uint8_t *)fw_id, (uint16_t)strlen(fw_id));
+            return 0;
+        }
+        case 'E': {
+            char errstr[64];
+            int n = snprintf_(errstr, sizeof(errstr), "CANable Error Register: %X", (unsigned int)error_reg());
+            if (n > 0) CDC_Transmit_FS((uint8_t *)errstr, (uint16_t)n);
+            return 0;
+        }
+        case 'T': frame.is_extended = 1U; frame.is_remote = 0U; break;
+        case 't': frame.is_extended = 0U; frame.is_remote = 0U; break;
+        case 'R': frame.is_extended = 1U; frame.is_remote = 1U; break;
+        case 'r': frame.is_extended = 0U; frame.is_remote = 1U; break;
+        default: return -1;
     }
 
-
-    // Process command
-    switch(buf[0])
-    {
-		case 'O':
-			// Open channel command
-			can_enable();
-			return 0;
-
-		case 'C':
-			// Close channel command
-			can_disable();
-			return 0;
-
-		case 'S':
-			// Set bitrate command
-
-			// Check for valid bitrate
-			if(buf[1] >= CAN_BITRATE_INVALID)
-			{
-				return -1;
-			}
-
-			can_set_bitrate(buf[1]);
-			return 0;
-
-		case 'm':
-		case 'M':
-			// Set mode command
-			if (buf[1] == 1)
-			{
-				// Mode 1: silent
-				can_set_silent(1);
-			} else {
-				// Default to normal mode
-				can_set_silent(0);
-			}
-			return 0;
-
-		case 'a':
-		case 'A':
-			// Set autoretry command
-			if (buf[1] == 1)
-			{
-				// Mode 1: autoretry enabled (default)
-				can_set_autoretransmit(1);
-			} else {
-				// Mode 0: autoretry disabled
-				can_set_autoretransmit(0);
-			}
-			return 0;
-
-		case 'V':
-		{
-			// Report firmware version and remote
-			char* fw_id = GIT_VERSION " " GIT_REMOTE "\r";
-			CDC_Transmit_FS((uint8_t*)fw_id, strlen(fw_id));
-			return 0;
-		}
-
-	    // Nonstandard!
-		case 'E':
-		{
-	        // Report error register
-			char errstr[64] = {0};
-			snprintf_(errstr, 64, "CANable Error Register: %X", (unsigned int)error_reg());
-			CDC_Transmit_FS((uint8_t*)errstr, strlen(errstr));
-	        return 0;
-		}
-
-		case 'T':
-	    	frame_header.IDE = CAN_ID_EXT;
-		case 't':
-			// Transmit data frame command
-			frame_header.RTR = CAN_RTR_DATA;
-			break;
-
-		case 'R':
-	    	frame_header.IDE = CAN_ID_EXT;
-		case 'r':
-			// Transmit remote frame command
-			frame_header.RTR = CAN_RTR_REMOTE;
-			break;
-
-    	default:
-    		// Error, unknown command
-    		return -1;
+    id_len = frame.is_extended ? SLCAN_EXT_ID_LEN : SLCAN_STD_ID_LEN;
+    if (len < (uint8_t)(1U + id_len + 1U)) return -1;
+    pos = 1U;
+    for (uint8_t i = 0U; i < id_len; ++i) {
+        uint8_t nibble = hex_value(buf[pos++]);
+        if (nibble > 0x0FU) return -1;
+        frame.id = (frame.id << 4) | nibble;
     }
 
-
-    // Save CAN ID depending on ID type
-    uint8_t msg_position = 1;
-    if (frame_header.IDE == CAN_ID_EXT) {
-        while (msg_position <= SLCAN_EXT_ID_LEN) {
-        	frame_header.ExtId *= 16;
-        	frame_header.ExtId += buf[msg_position++];
+    frame.dlc = hex_value(buf[pos++]);
+    if (frame.dlc > 8U) return -1;
+    if (frame.is_remote) {
+        if (len != pos) return -1;
+    } else {
+        if (len != (uint8_t)(pos + frame.dlc * 2U)) return -1;
+        for (uint8_t i = 0U; i < frame.dlc; ++i) {
+            uint8_t high = hex_value(buf[pos++]);
+            uint8_t low = hex_value(buf[pos++]);
+            if (high > 0x0FU || low > 0x0FU) return -1;
+            frame.data[i] = (uint8_t)((high << 4) | low);
         }
     }
-    else {
-        while (msg_position <= SLCAN_STD_ID_LEN) {
-        	frame_header.StdId *= 16;
-        	frame_header.StdId += buf[msg_position++];
-        }
-    }
-
-
-    // Attempt to parse DLC and check sanity
-    frame_header.DLC = buf[msg_position++];
-    if (frame_header.DLC > 8) {
-        return -1;
-    }
-
-    // Copy frame data to buffer
-    uint8_t frame_data[8] = {0};
-    for (uint8_t j = 0; j < frame_header.DLC; j++) {
-        frame_data[j] = (buf[msg_position] << 4) + buf[msg_position+1];
-        msg_position += 2;
-    }
-
-    // Transmit the message
-    can_tx(&frame_header, frame_data);
-
-    return 0;
+    return can_tx(&frame) == CAN_STATUS_OK ? 0 : -1;
 }
-

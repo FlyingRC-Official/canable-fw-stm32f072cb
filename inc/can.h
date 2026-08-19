@@ -1,7 +1,9 @@
-#ifndef _CAN_H
-#define _CAN_H
+#ifndef CAN_H
+#define CAN_H
 
-enum can_bitrate {
+#include <stdint.h>
+
+typedef enum {
     CAN_BITRATE_10K = 0,
     CAN_BITRATE_20K,
     CAN_BITRATE_50K,
@@ -11,44 +13,34 @@ enum can_bitrate {
     CAN_BITRATE_500K,
     CAN_BITRATE_750K,
     CAN_BITRATE_1000K,
+    CAN_BITRATE_INVALID,
+} can_bitrate_t;
 
-	CAN_BITRATE_INVALID,
-};
+typedef enum {
+    CAN_STATUS_OK = 0,
+    CAN_STATUS_BUSY,
+    CAN_STATUS_ERROR,
+} can_status_t;
 
-typedef enum can_bus_state {
-    OFF_BUS = 0,
-    ON_BUS = 1,
-} can_bus_state_t;
+/* Public CAN frame representation. No device-library types escape this API. */
+typedef struct {
+    uint32_t id;
+    uint8_t dlc;
+    uint8_t is_extended;
+    uint8_t is_remote;
+    uint8_t data[8];
+} can_frame_t;
 
-
-// CAN transmit buffering
-#define TXQUEUE_LEN 28 // Number of buffers allocated
-#define TXQUEUE_DATALEN 8 // CAN DLC length of data buffers
-
-typedef struct cantxbuf_
-{
-	uint8_t data[TXQUEUE_LEN][TXQUEUE_DATALEN]; // Data buffer
-	CAN_TxHeaderTypeDef header[TXQUEUE_LEN]; // Header buffer
-	uint8_t head; // Head pointer
-	uint8_t tail; // Tail pointer
-	uint8_t full; // TODO: Set this when we are full, clear when the tail moves one.
-} can_txbuf_t;
-
-
-// Prototypes
 void can_init(void);
 void can_enable(void);
 void can_disable(void);
-void can_set_bitrate(enum can_bitrate bitrate);
+void can_set_bitrate(can_bitrate_t bitrate);
 void can_set_silent(uint8_t silent);
 void can_set_autoretransmit(uint8_t autoretransmit);
-uint32_t can_tx(CAN_TxHeaderTypeDef *tx_msg_header, uint8_t *tx_msg_data);
-uint32_t can_rx(CAN_RxHeaderTypeDef *rx_msg_header, uint8_t *rx_msg_data);
-
-
+can_status_t can_tx(const can_frame_t *frame);
+can_status_t can_rx(can_frame_t *frame);
 void can_process(void);
+uint8_t can_is_rx_pending(void);
+void can_irq_handler(void);
 
-uint8_t is_can_msg_pending(uint8_t fifo);
-CAN_HandleTypeDef* can_gethandle(void);
-
-#endif // _CAN_H
+#endif

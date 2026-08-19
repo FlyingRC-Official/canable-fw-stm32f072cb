@@ -1,290 +1,194 @@
-//
-// can: initializes and provides methods to interact with the CAN peripheral
-//
-
-#include "stm32f0xx_hal.h"
-#include "slcan.h"
-#include "usbd_cdc_if.h"
+#include <string.h>
+#include "apm32f0xx.h"
+#include "apm32f0xx_can.h"
+#include "apm32f0xx_gpio.h"
+#include "apm32f0xx_misc.h"
+#include "apm32f0xx_rcm.h"
 #include "can.h"
 #include "led.h"
 #include "error.h"
 
+#define CAN_S_PIN GPIO_PIN_13
+#define TXQUEUE_LEN 28U
 
-// Private variables
-static CAN_HandleTypeDef can_handle;
-static CAN_FilterTypeDef filter;
-static uint32_t prescaler;
+typedef enum { OFF_BUS = 0, ON_BUS = 1 } can_bus_state_t;
+typedef struct {
+    can_frame_t frame[TXQUEUE_LEN];
+    uint8_t head;
+    uint8_t tail;
+} can_tx_queue_t;
+
+static uint16_t prescaler = 48U;
 static can_bus_state_t bus_state = OFF_BUS;
-static uint8_t can_silent = DISABLE;
+static uint8_t can_silent;
 static uint8_t can_autoretransmit = ENABLE;
-static can_txbuf_t txqueue = {0};
+static can_tx_queue_t txqueue;
 
-#define CAN_S_Pin GPIO_PIN_13
-#define CAN_S_Port GPIOC
-#define CAN_S CAN_S_Port, CAN_S_Pin
-
-
-// Initialize CAN peripheral settings, but don't actually start the peripheral
 void can_init(void)
 {
-    // Initialize GPIO for CAN transceiver 
-    GPIO_InitTypeDef GPIO_InitStruct;
-    __HAL_RCC_CAN1_CLK_ENABLE();
-    __HAL_RCC_GPIOB_CLK_ENABLE();
-    __HAL_RCC_GPIOC_CLK_ENABLE();
+    GPIO_Config_T gpio;
 
-    // PC13 ------> TJA1051 S input. Low selects normal high-speed mode.
-    GPIO_InitStruct.Pin = CAN_S_Pin;
-    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-    GPIO_InitStruct.Alternate = 0;
-    HAL_GPIO_Init(CAN_S_Port, &GPIO_InitStruct);
-    HAL_GPIO_WritePin(CAN_S, GPIO_PIN_RESET);
+    RCM_EnableAPB1PeriphClock(RCM_APB1_PERIPH_CAN);
+    RCM_EnableAHBPeriphClock(RCM_AHB_PERIPH_GPIOB | RCM_AHB_PERIPH_GPIOC);
 
-    //PB8     ------> CAN_RX
-    //PB9     ------> CAN_TX
-    GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_9;
-    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
-    GPIO_InitStruct.Alternate = GPIO_AF4_CAN;
-    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+    GPIO_ConfigStructInit(&gpio);
+    gpio.pin = CAN_S_PIN;
+    gpio.mode = GPIO_MODE_OUT;
+    gpio.outtype = GPIO_OUT_TYPE_PP;
+    gpio.speed = GPIO_SPEED_2MHz;
+    gpio.pupd = GPIO_PUPD_NO;
+    GPIO_Config(GPIOC, &gpio);
+    GPIO_ClearBit(GPIOC, CAN_S_PIN);
 
+    gpio.pin = GPIO_PIN_8 | GPIO_PIN_9;
+    gpio.mode = GPIO_MODE_AF;
+    gpio.speed = GPIO_SPEED_50MHz;
+    GPIO_Config(GPIOB, &gpio);
+    GPIO_ConfigPinAF(GPIOB, GPIO_PIN_SOURCE_8, GPIO_AF_PIN4);
+    GPIO_ConfigPinAF(GPIOB, GPIO_PIN_SOURCE_9, GPIO_AF_PIN4);
 
-    // Initialize default CAN filter configuration
-    filter.FilterIdHigh = 0;
-    filter.FilterIdLow = 0;
-    filter.FilterMaskIdHigh = 0;
-    filter.FilterMaskIdLow = 0;
-    filter.FilterFIFOAssignment = CAN_RX_FIFO0;
-    filter.FilterBank = 0;
-    filter.FilterMode = CAN_FILTERMODE_IDMASK;
-    filter.FilterScale = CAN_FILTERSCALE_32BIT;
-    filter.FilterActivation = ENABLE;
-
-
-    // default to 125 kbit/s
-    prescaler = 48;
-    can_handle.Instance = CAN;
-    bus_state = OFF_BUS;
-
-    HAL_NVIC_SetPriority(CEC_CAN_IRQn, 1, 0);
-    HAL_NVIC_EnableIRQ(CEC_CAN_IRQn);
-
+    NVIC_EnableIRQRequest(CEC_CAN_IRQn, 1U);
 }
 
-
-// Start the CAN peripheral
 void can_enable(void)
 {
-    if (bus_state == OFF_BUS)
-    {
-    	can_handle.Init.Prescaler = prescaler;
-    	can_handle.Init.Mode = can_silent ? CAN_MODE_SILENT : CAN_MODE_NORMAL;
+    CAN_Config_T config;
+    CAN_FilterConfig_T filter;
 
-    	can_handle.Init.SyncJumpWidth = CAN_SJW_1TQ;
-    	can_handle.Init.TimeSeg1 = CAN_BS1_4TQ;
-    	can_handle.Init.TimeSeg2 = CAN_BS2_3TQ;
-    	can_handle.Init.TimeTriggeredMode = DISABLE;
-    	can_handle.Init.AutoBusOff = ENABLE;
-    	can_handle.Init.AutoWakeUp = DISABLE;
-    	can_handle.Init.AutoRetransmission = can_autoretransmit;
-    	can_handle.Init.ReceiveFifoLocked = DISABLE;
-    	can_handle.Init.TransmitFifoPriority = ENABLE;
-        HAL_CAN_Init(&can_handle);
-
-        HAL_CAN_ConfigFilter(&can_handle, &filter);
-
-        HAL_CAN_Start(&can_handle);
-        bus_state = ON_BUS;
-
-        led_blue_on();
+    if (bus_state == ON_BUS) {
+        return;
     }
+
+    CAN_Reset();
+    CAN_ConfigStructInit(&config);
+    config.prescaler = prescaler;
+    config.mode = can_silent ? CAN_MODE_SILENT : CAN_MODE_NORMAL;
+    config.syncJumpWidth = CAN_SJW_1;
+    config.timeSegment1 = CAN_TIME_SEGMENT1_4;
+    config.timeSegment2 = CAN_TIME_SEGMENT2_3;
+    config.timeTrigComMode = DISABLE;
+    config.autoBusOffManage = ENABLE;
+    config.autoWakeUpMode = DISABLE;
+    config.nonAutoRetran = can_autoretransmit ? DISABLE : ENABLE;
+    config.rxFIFOLockMode = DISABLE;
+    config.txFIFOPriority = ENABLE;
+    if (CAN_Config(&config) == ERROR) {
+        error_assert(ERR_CAN_TXFAIL);
+        return;
+    }
+
+    memset(&filter, 0, sizeof(filter));
+    filter.filterFIFO = CAN_FIFO_0;
+    filter.filterNumber = CAN_FILTER_NUMBER_0;
+    filter.filterMode = CAN_FILTER_MODE_IDMASK;
+    filter.filterScale = CAN_FILTER_SCALE_32BIT;
+    filter.filterActivation = ENABLE;
+    CAN_ConfigFilter(&filter);
+    CAN_EnableInterrupt(CAN_INT_F0OVR);
+    bus_state = ON_BUS;
+    led_blue_on();
 }
 
-
-// Disable the CAN peripheral and go off-bus
 void can_disable(void)
 {
-    if (bus_state == ON_BUS)
-    {
-        // Do a bxCAN reset (set RESET bit to 1)
-    	can_handle.Instance->MCR |= CAN_MCR_RESET;
+    if (bus_state == ON_BUS) {
+        CAN_Reset();
         bus_state = OFF_BUS;
-
         led_green_on();
     }
 }
 
-
-// Set the bitrate of the CAN peripheral
-void can_set_bitrate(enum can_bitrate bitrate)
+void can_set_bitrate(can_bitrate_t bitrate)
 {
-    if (bus_state == ON_BUS)
-    {
-        // cannot set bitrate while on bus
-        return;
+    static const uint16_t dividers[CAN_BITRATE_INVALID] = {
+        600U, 300U, 120U, 60U, 48U, 24U, 12U, 8U, 6U
+    };
+    if (bus_state == OFF_BUS && bitrate < CAN_BITRATE_INVALID) {
+        prescaler = dividers[bitrate];
+        led_green_on();
     }
-
-    switch (bitrate)
-    {
-        case CAN_BITRATE_10K:
-        	prescaler = 600;
-            break;
-        case CAN_BITRATE_20K:
-        	prescaler = 300;
-            break;
-        case CAN_BITRATE_50K:
-        	prescaler = 120;
-            break;
-        case CAN_BITRATE_100K:
-            prescaler = 60;
-            break;
-        case CAN_BITRATE_125K:
-            prescaler = 48;
-            break;
-        case CAN_BITRATE_250K:
-            prescaler = 24;
-            break;
-        case CAN_BITRATE_500K:
-            prescaler = 12;
-            break;
-        case CAN_BITRATE_750K:
-            prescaler = 8;
-            break;
-        case CAN_BITRATE_1000K:
-            prescaler = 6;
-            break;
-        case CAN_BITRATE_INVALID:
-        default:
-            prescaler = 6;
-            break;
-    }
-
-    led_green_on();
 }
 
-
-// Set CAN peripheral to silent mode
 void can_set_silent(uint8_t silent)
 {
-    if (bus_state == ON_BUS)
-    {
-        // cannot set silent mode while on bus
-        return;
+    if (bus_state == OFF_BUS) {
+        can_silent = silent ? ENABLE : DISABLE;
+        GPIO_WriteBitValue(GPIOC, CAN_S_PIN, silent ? Bit_SET : Bit_RESET);
+        led_green_on();
     }
-    if (silent)
-    {
-    	can_silent = ENABLE;
-    	can_handle.Init.Mode = CAN_MODE_SILENT;
-        HAL_GPIO_WritePin(CAN_S, GPIO_PIN_SET);
-    } else {
-    	can_silent = DISABLE;
-    	can_handle.Init.Mode = CAN_MODE_NORMAL;
-        HAL_GPIO_WritePin(CAN_S, GPIO_PIN_RESET);
-    }
-
-    led_green_on();
 }
 
-
-// Enable/disable auto-retransmission
 void can_set_autoretransmit(uint8_t autoretransmit)
 {
-    if (bus_state == ON_BUS)
-    {
-        // Cannot set autoretransmission while on bus
-        return;
+    if (bus_state == OFF_BUS) {
+        can_autoretransmit = autoretransmit ? ENABLE : DISABLE;
+        led_green_on();
     }
-    if (autoretransmit)
-    {
-    	can_autoretransmit = ENABLE;
-    } else {
-    	can_autoretransmit = DISABLE;
-    }
-
-    led_green_on();
 }
 
-
-// Send a message on the CAN bus
-uint32_t can_tx(CAN_TxHeaderTypeDef *tx_msg_header, uint8_t* tx_msg_data)
+can_status_t can_tx(const can_frame_t *frame)
 {
-	// Check if space available in the buffer (FIXME: wastes 1 item)
-	if( ((txqueue.head + 1) % TXQUEUE_LEN) == txqueue.tail)
-	{
-		error_assert(ERR_FULLBUF_CANTX);
-		return HAL_ERROR;
-	}
-
-	// Copy header struct into array
-	txqueue.header[txqueue.head] = *tx_msg_header;
-
-	// Copy data into array
-	for(uint8_t i=0; i<tx_msg_header->DLC; i++)
-	{
-		txqueue.data[txqueue.head][i] = tx_msg_data[i];
-	}
-
-	// Increment the head pointer
-	txqueue.head = (txqueue.head + 1) % TXQUEUE_LEN;
-
-	return HAL_OK;
+    uint8_t next = (uint8_t)((txqueue.head + 1U) % TXQUEUE_LEN);
+    if (frame == NULL || frame->dlc > 8U) {
+        return CAN_STATUS_ERROR;
+    }
+    if (next == txqueue.tail) {
+        error_assert(ERR_FULLBUF_CANTX);
+        return CAN_STATUS_BUSY;
+    }
+    txqueue.frame[txqueue.head] = *frame;
+    txqueue.head = next;
+    return CAN_STATUS_OK;
 }
 
-
-// Process messages in the TX output queue
 void can_process(void)
 {
-    if((txqueue.tail != txqueue.head) && (HAL_CAN_GetTxMailboxesFreeLevel(&can_handle) > 0))
-	{
-		// Transmit can frame
-		uint32_t mailbox_txed = 0;
-		uint32_t status = HAL_CAN_AddTxMessage(&can_handle, &txqueue.header[txqueue.tail], txqueue.data[txqueue.tail], &mailbox_txed);
-		txqueue.tail = (txqueue.tail + 1) % TXQUEUE_LEN;
+    CAN_Tx_Message tx = {0};
+    can_frame_t *frame;
 
-		led_green_on();
-
-		// This drops the packet if it fails (no retry). Failure is unlikely
-		// since we check if there is a TX mailbox free.
-		if(status != HAL_OK)
-		{
-			error_assert(ERR_CAN_TXFAIL);
-		}
-	}
-}
-
-
-// Receive message from the CAN bus RXFIFO
-uint32_t can_rx(CAN_RxHeaderTypeDef *rx_msg_header, uint8_t* rx_msg_data)
-{
-    uint32_t status = HAL_CAN_GetRxMessage(&can_handle, CAN_RX_FIFO0, rx_msg_header, rx_msg_data);
-	led_blue_on();
-    return status;
-}
-
-
-// Check if a CAN message has been received and is waiting in the FIFO
-uint8_t is_can_msg_pending(uint8_t fifo)
-{
-    if (bus_state == OFF_BUS)
-    {
-        return 0;
+    if (bus_state == OFF_BUS || txqueue.tail == txqueue.head) {
+        return;
     }
-    return(HAL_CAN_GetRxFifoFillLevel(&can_handle, CAN_RX_FIFO0) > 0);
+
+    frame = &txqueue.frame[txqueue.tail];
+    tx.typeID = frame->is_extended ? CAN_TYPEID_EXT : CAN_TYPEID_STD;
+    tx.remoteTxReq = frame->is_remote ? CAN_RTXR_REMOTE : CAN_RTXR_DATA;
+    tx.stanID = frame->id;
+    tx.extenID = frame->id;
+    tx.dataLengthCode = frame->dlc;
+    memcpy(tx.data, frame->data, sizeof(tx.data));
+
+    if (CAN_TxMessage(&tx) != CAN_TX_MAILBOX_FULL) {
+        txqueue.tail = (uint8_t)((txqueue.tail + 1U) % TXQUEUE_LEN);
+        led_green_on();
+    }
 }
 
-
-// Return reference to CAN handle
-CAN_HandleTypeDef* can_gethandle(void)
+can_status_t can_rx(can_frame_t *frame)
 {
-	return &can_handle;
+    CAN_Rx_Message rx;
+    if (frame == NULL || !can_is_rx_pending()) {
+        return CAN_STATUS_ERROR;
+    }
+    CAN_RxMessage(CAN_FIFO_0, &rx);
+    frame->id = (rx.typeID == CAN_TYPEID_EXT) ? rx.extenID : rx.stanID;
+    frame->dlc = rx.dataLengthCode;
+    frame->is_extended = (rx.typeID == CAN_TYPEID_EXT);
+    frame->is_remote = (rx.remoteTxReq == CAN_RTXR_REMOTE);
+    memcpy(frame->data, rx.data, sizeof(frame->data));
+    led_blue_on();
+    return CAN_STATUS_OK;
 }
 
-
-// Callback for FIFO0 full
-void HAL_CAN_RxFifo0FullCallback(CAN_HandleTypeDef *hcan)
+uint8_t can_is_rx_pending(void)
 {
-	error_assert(ERR_CANRXFIFO_OVERFLOW);
+    return (bus_state == ON_BUS) && (CAN_PendingMessage(CAN_FIFO_0) != 0U);
+}
+
+void can_irq_handler(void)
+{
+    if (CAN_ReadIntFlag(CAN_INT_F0OVR)) {
+        CAN_ClearIntFlag(CAN_INT_F0OVR);
+        error_assert(ERR_CANRXFIFO_OVERFLOW);
+    }
 }

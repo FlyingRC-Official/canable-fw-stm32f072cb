@@ -1,8 +1,8 @@
-#ifndef __STM32F0xx_IT_H
-#define __STM32F0xx_IT_H
+#ifndef INTERRUPTS_H
+#define INTERRUPTS_H
 
-void USB_IRQHandler(void);
+void USBD_IRQHandler(void);
+void CEC_CAN_IRQHandler(void);
 void SysTick_Handler(void);
 
-#endif 
-
+#endif

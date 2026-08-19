@@ -1,6 +1,6 @@
 # Licenses
 
-## CANtact Sources
+## CANable application sources
 
 The MIT License (MIT)
 
@@ -24,12 +24,19 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
-## STM32 HAL
+The bundled tiny printf implementation in `src/printf.c` and `inc/printf.h`
+also carries its own MIT notice.
 
-The HAL is distributed under a non-restrictive BSD (Berkeley Software 
-Distribution) license.
+## Geehy APM32 SDK
 
-## STM32 USB Library
-Code from the STM32 USB library is licensed under ST Micro's [Liberty V2
-License](http://www.st.com/software_license_agreement_liberty_v2)
+Files below `vendor/geehy/` originate from APM32F0xx SDK V1.8.7 and are not
+relicensed under MIT. They are governed by Geehy Semiconductor's software
+package license. The required notice is preserved verbatim at:
 
+`vendor/geehy/GEEHY COPYRIGHT NOTICE.txt`
+
+## Legacy upstream STM32 files
+
+The upstream `Drivers/`, `Middlewares/ST/` and Cube configuration are excluded
+from the APM32 active build. If redistributed, their embedded STMicroelectronics
+license notices continue to apply to those files.

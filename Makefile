@@ -1,192 +1,133 @@
-# STM32F0xx Makefile
-# #####################################
-#
-# Part of the uCtools project
-# uctools.github.com
-#
-#######################################
-# user configuration:
-#######################################
-
-
-# SOURCES: list of sources in the user application
-SOURCES = main.c system.c usbd_conf.c usbd_cdc_if.c usb_device.c usbd_desc.c interrupts.c system_stm32f0xx.c can.c slcan.c led.c error.c printf.c
-
-# Get git version and dirty flag
-GIT_VERSION := $(shell git describe --abbrev=7 --dirty --always --tags 2>/dev/null || echo f072cb-port)
-GIT_REMOTE := $(shell git config --get remote.origin.url 2>/dev/null | sed 's/^.*github/github/')
-
-# TARGET: name of the user application
-TARGET = stm32f072cb-slcan-$(GIT_VERSION)
-
-# BUILD_DIR: directory to place output files in
-BUILD_DIR = build
-
-# LD_SCRIPT: location of the linker script
-LD_SCRIPT = STM32F072CB_FLASH.ld
-
-# USER_DEFS user defined macros
-USER_DEFS = -D HSI48_VALUE=48000000 -D HSE_VALUE=8000000
-
-# USER_INCLUDES: user defined includes
-USER_INCLUDES =
-
-# USB_INCLUDES: includes for the usb library
-USB_INCLUDES = -IMiddlewares/ST/STM32_USB_Device_Library/Core/Inc
-USB_INCLUDES += -IMiddlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc
-
-# USER_CFLAGS: user C flags (enable warnings, enable debug info)
-USER_CFLAGS = -Wall -g -ffunction-sections -fdata-sections -Os
-
-ifneq ($(EXTERNAL_OSCILLATOR), 1)
-USER_CFLAGS += -DINTERNAL_OSCILLATOR
+PROTOCOL ?= slcan
+ifeq ($(PROTOCOL),slcan)
+PROTOCOL_SOURCE := src/slcan.c
+else ifeq ($(PROTOCOL),mavcan)
+PROTOCOL_SOURCE := src/mavcan.c
+PROTOCOL_DEFS := -DMAVCAN_BRIDGE
+else
+$(error Unsupported PROTOCOL '$(PROTOCOL)'; use slcan or mavcan)
 endif
 
-# USER_LDFLAGS:  user LD flags
-USER_LDFLAGS = -fno-exceptions -ffunction-sections -fdata-sections -Wl,--gc-sections
+PROJECT := apm32f072cb-$(PROTOCOL)
+VERSION ?= dev
+REMOTE ?= github.com/FlyingRC-Official/canable-fw-stm32f072cb
+TARGET := $(PROJECT)-$(VERSION)
+BUILD_DIR ?= build
+OBJ_DIR := $(BUILD_DIR)/obj/$(PROTOCOL)
 
-# TARGET_DEVICE: device to compile for
-TARGET_DEVICE = STM32F072xB
+TOOLCHAIN_PREFIX ?= arm-none-eabi-
+CC := $(TOOLCHAIN_PREFIX)gcc
+SIZE := $(TOOLCHAIN_PREFIX)size
+OBJCOPY := $(TOOLCHAIN_PREFIX)objcopy
 
-#######################################
-# end of user configuration
-#######################################
-#
-#######################################
-# binaries
-#######################################
-CC = arm-none-eabi-gcc
-AR = arm-none-eabi-ar
-RANLIB = arm-none-eabi-ranlib
-SIZE = arm-none-eabi-size
-OBJCOPY = arm-none-eabi-objcopy
-MKDIR = mkdir -p
-#######################################
+LD_SCRIPT := APM32F072CB_FLASH.ld
+CPU_FLAGS := -mcpu=cortex-m0plus -mthumb
+DEFS := -DAPM32F072xB -DUSB_DEVICE -DPRINTF_DISABLE_SUPPORT_FLOAT
+DEFS += -DPRINTF_DISABLE_SUPPORT_EXPONENTIAL
+DEFS += -DGIT_VERSION=\"$(VERSION)\" -DGIT_REMOTE=\"$(REMOTE)\"
+DEFS += $(PROTOCOL_DEFS)
 
-# core and CPU type for Cortex M0
-# ARM core type (CORE_M0, CORE_M3)
-CORE = CORE_M0
-# ARM CPU type (cortex-m0, cortex-m3)
-CPU = cortex-m0
+GEEHY := vendor/geehy
+DEVICE := $(GEEHY)/Libraries/Device/Geehy/APM32F0xx
+PERIPH := $(GEEHY)/Libraries/APM32F0xx_StdPeriphDriver
+USB := $(GEEHY)/Middlewares/APM32_USB_Library/Device
 
-# where to build STM32Cube
-CUBELIB_BUILD_DIR = $(BUILD_DIR)/STM32Cube
+INCLUDES := -Iinc
+INCLUDES += -I$(GEEHY)/Libraries/CMSIS/Include
+INCLUDES += -I$(DEVICE)/Include
+INCLUDES += -I$(PERIPH)/inc
+INCLUDES += -I$(USB)/Core/Inc
+INCLUDES += -I$(USB)/Class/CDC/Inc
 
-# various paths within the STmicro library
-CMSIS_PATH = Drivers/CMSIS
-CMSIS_DEVICE_PATH = $(CMSIS_PATH)/Device/ST/STM32F0xx
-DRIVER_PATH = Drivers/STM32F0xx_HAL_Driver
+APP_SOURCES := src/main.c src/system.c src/usbd_cdc_if.c src/usb_device.c
+APP_SOURCES += src/usbd_desc.c src/interrupts.c src/can.c $(PROTOCOL_SOURCE)
+APP_SOURCES += src/led.c src/error.c src/printf.c src/runtime.c
+DEVICE_SOURCES := $(DEVICE)/Source/system_apm32f0xx.c
+PERIPH_SOURCES := $(PERIPH)/src/apm32f0xx_can.c $(PERIPH)/src/apm32f0xx_crs.c
+PERIPH_SOURCES += $(PERIPH)/src/apm32f0xx_fmc.c $(PERIPH)/src/apm32f0xx_gpio.c
+PERIPH_SOURCES += $(PERIPH)/src/apm32f0xx_misc.c $(PERIPH)/src/apm32f0xx_rcm.c
+PERIPH_SOURCES += $(PERIPH)/src/apm32f0xx_usb.c $(PERIPH)/src/apm32f0xx_usb_device.c
+USB_SOURCES := $(USB)/Core/Src/usbd_core.c $(USB)/Core/Src/usbd_dataXfer.c
+USB_SOURCES += $(USB)/Core/Src/usbd_stdReq.c $(USB)/Class/CDC/Src/usbd_cdc.c
+STARTUP := $(DEVICE)/Source/gcc/startup_apm32f072.S
+SOURCES := $(APP_SOURCES) $(DEVICE_SOURCES) $(PERIPH_SOURCES) $(USB_SOURCES)
+OBJECTS := $(addprefix $(OBJ_DIR)/,$(notdir $(SOURCES:.c=.o))) $(OBJ_DIR)/startup_apm32f072.o
 
-# includes for gcc
-INCLUDES = -I$(CMSIS_PATH)/Include
-INCLUDES += -I$(CMSIS_DEVICE_PATH)/Include
-INCLUDES += -I$(DRIVER_PATH)/Inc
-INCLUDES += -Iinc
-INCLUDES += $(USB_INCLUDES)
-INCLUDES += $(USER_INCLUDES)
+CFLAGS := $(CPU_FLAGS) $(DEFS) $(INCLUDES) -std=c11 -Os -g3
+CFLAGS += -Wall -Wextra -Wshadow -Wundef -Wdouble-promotion
+CFLAGS += -ffunction-sections -fdata-sections -fno-common
+ASFLAGS := $(CPU_FLAGS) $(DEFS) $(INCLUDES) -x assembler-with-cpp -g3
+LDFLAGS := $(CPU_FLAGS) -nostartfiles -T$(LD_SCRIPT) -Wl,--gc-sections -Wl,--cref
+LDFLAGS += -Wl,--no-warn-rwx-segments
+LDFLAGS += -Wl,-Map=$(BUILD_DIR)/$(TARGET).map --specs=nano.specs --specs=nosys.specs
+LDLIBS := -Wl,--start-group -lc -lm -lnosys -lgcc -Wl,--end-group
 
-# macros for gcc
-DEFS = -D$(CORE) $(USER_DEFS) -D$(TARGET_DEVICE)
+ELF := $(BUILD_DIR)/$(TARGET).elf
+HEX := $(BUILD_DIR)/$(TARGET).hex
+BIN := $(BUILD_DIR)/$(TARGET).bin
+MAP := $(BUILD_DIR)/$(TARGET).map
 
-# compile gcc flags
-CFLAGS = $(DEFS) $(INCLUDES)
-CFLAGS += -mcpu=$(CPU) -mthumb
-CFLAGS += $(USER_CFLAGS)
-CFLAGS += -DGIT_VERSION=\"$(GIT_VERSION)\"
-CFLAGS += -DGIT_REMOTE=\"$(GIT_REMOTE)\"
+define make_dir
+	@mkdir -p "$1"
+endef
+define remove_dir
+	@rm -rf "$1"
+endef
 
-# default action: build the user application
-all: $(BUILD_DIR)/$(TARGET).bin $(BUILD_DIR)/$(TARGET).hex
+.PHONY: all clean size flash
+all: $(ELF) $(HEX) $(BIN)
 
-
-flash: all
-	sudo dfu-util -d 0483:df11 -c 1 -i 0 -a 0 -s 0x08000000:leave -D $(BUILD_DIR)/$(TARGET).bin
-
-
-#######################################
-# build the st micro peripherial library
-# (drivers and CMSIS)
-#######################################
-
-CUBELIB = $(CUBELIB_BUILD_DIR)/libstm32cube.a
-
-# List of stm32 driver objects
-CUBELIB_DRIVER_OBJS = $(addprefix $(CUBELIB_BUILD_DIR)/, $(patsubst %.c, %.o, $(notdir $(wildcard $(DRIVER_PATH)/Src/*.c))))
-
-# shortcut for building core library (make cubelib)
-cubelib: $(CUBELIB)
-
-$(CUBELIB): $(CUBELIB_DRIVER_OBJS)
-	$(AR) rv $@ $(CUBELIB_DRIVER_OBJS)
-	$(RANLIB) $@
-
-$(CUBELIB_BUILD_DIR)/%.o: $(DRIVER_PATH)/Src/%.c | $(CUBELIB_BUILD_DIR)
-	$(CC) -c $(CFLAGS) -o $@ $^
-
-$(CUBELIB_BUILD_DIR):
-	$(MKDIR) $@
-
-#######################################
-# build the USB library
-#######################################
-USB_MIDDLEWARE_PATH = ./Middlewares/ST/STM32_USB_Device_Library/
-USB_BUILD_DIR = $(BUILD_DIR)/usb
-USB_SOURCES += usbd_ctlreq.c usbd_ioreq.c usbd_core.c usbd_cdc.c
-# list of usb library objects
-USB_OBJECTS += $(addprefix $(USB_BUILD_DIR)/,$(notdir $(USB_SOURCES:.c=.o)))
-
-usb: $(USB_OBJECTS)
-
-$(USB_BUILD_DIR)/%.o: $(USB_MIDDLEWARE_PATH)/Core/Src/%.c | $(USB_BUILD_DIR)
-	$(CC) -Os $(CFLAGS) -c -o $@ $^
-
-$(USB_BUILD_DIR)/%.o: $(USB_MIDDLEWARE_PATH)/Class/CDC/Src/%.c | $(USB_BUILD_DIR)
-	$(CC) -Os $(CFLAGS) -c -o $@ $^
-
-$(USB_BUILD_DIR):
-	@echo $(USB_BUILD_DIR)
-	$(MKDIR) $@
-
-#######################################
-# build the user application
-#######################################
-
-# list of user program objects
-OBJECTS = $(addprefix $(BUILD_DIR)/,$(notdir $(SOURCES:.c=.o)))
-# add an object for the startup code
-OBJECTS += $(BUILD_DIR)/startup_stm32f072xb.o
-
-# use the periphlib core library, plus generic ones (libc, libm, libnosys)
-LIBS = -lstm32cube -lc -lm -lnosys
-LDFLAGS = -T $(LD_SCRIPT) -L $(CUBELIB_BUILD_DIR) -static $(LIBS) $(USER_LDFLAGS)
-
-$(BUILD_DIR)/$(TARGET).hex: $(BUILD_DIR)/$(TARGET).elf
-	$(OBJCOPY) -O ihex $(BUILD_DIR)/$(TARGET).elf $@
-
-$(BUILD_DIR)/$(TARGET).bin: $(BUILD_DIR)/$(TARGET).elf
-	$(OBJCOPY) -O binary $(BUILD_DIR)/$(TARGET).elf $@
-
-$(BUILD_DIR)/$(TARGET).elf: $(OBJECTS) $(USB_OBJECTS) $(CUBELIB)
-	$(CC) -o $@ $(CFLAGS) $(OBJECTS) $(USB_OBJECTS) \
-		$(LDFLAGS) -Xlinker \
-		-Map=$(BUILD_DIR)/$(TARGET).map
+$(ELF): $(OBJECTS) $(LD_SCRIPT) | $(BUILD_DIR)
+	$(CC) $(OBJECTS) $(LDFLAGS) $(LDLIBS) -o $@
 	$(SIZE) $@
 
-$(BUILD_DIR)/%.o: src/%.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -Os -c -o $@ $^
+$(HEX): $(ELF)
+	$(OBJCOPY) -O ihex $< $@
 
-$(BUILD_DIR)/%.o: src/%.s | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c -o $@ $^
+$(BIN): $(ELF)
+	$(OBJCOPY) -O binary $< $@
 
-$(BUILD_DIR):
-	$(MKDIR) $@
+$(OBJ_DIR)/%.o: src/%.c | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
-# delete all user application files, keep the libraries
+$(OBJ_DIR)/%.o: $(DEVICE)/Source/%.c | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -w -MMD -MP -c $< -o $@
+
+$(OBJ_DIR)/%.o: $(PERIPH)/src/%.c | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -w -MMD -MP -c $< -o $@
+
+$(OBJ_DIR)/%.o: $(USB)/Core/Src/%.c | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -w -MMD -MP -c $< -o $@
+
+$(OBJ_DIR)/%.o: $(USB)/Class/CDC/Src/%.c | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -w -MMD -MP -c $< -o $@
+
+$(OBJ_DIR)/startup_apm32f072.o: $(STARTUP) | $(OBJ_DIR)
+	$(CC) $(ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR) $(OBJ_DIR):
+	$(call make_dir,$@)
+
+size: $(ELF)
+	$(SIZE) -A $(ELF)
+
+PYOCD ?= pyocd
+PYOCD_TARGET ?= APM32F072CB
+DFP_PATH ?= tools/Geehy.APM32F0xx_DFP.1.1.4.pack
+PROBE_UID ?=
+PYOCD_UID_ARG := $(if $(strip $(PROBE_UID)),--uid $(PROBE_UID),)
+SWD_FREQUENCY ?=
+CONNECT_MODE ?=
+PYOCD_FREQ_ARG := $(if $(strip $(SWD_FREQUENCY)),--frequency $(SWD_FREQUENCY),)
+PYOCD_CONNECT_ARG := $(if $(strip $(CONNECT_MODE)),--connect $(CONNECT_MODE),)
+PYOCD_ARGS := --target $(PYOCD_TARGET) --pack "$(DFP_PATH)" $(PYOCD_UID_ARG) $(PYOCD_FREQ_ARG) $(PYOCD_CONNECT_ARG)
+
+flash: all
+	$(PYOCD) load $(PYOCD_ARGS) --erase chip $(ELF)
+	$(PYOCD) commander $(PYOCD_ARGS) -c "compare 0x08000000 $(BIN)"
+	$(PYOCD) reset $(PYOCD_ARGS)
+
 clean:
-		-rm $(BUILD_DIR)/*.o
-		-rm $(BUILD_DIR)/*.elf
-		-rm $(BUILD_DIR)/*.hex
-		-rm $(BUILD_DIR)/*.map
-		-rm $(BUILD_DIR)/*.bin
+	$(call remove_dir,$(BUILD_DIR))
 
-.PHONY: clean all cubelib
+-include $(OBJECTS:.o=.d)

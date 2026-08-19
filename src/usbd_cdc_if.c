@@ -1,281 +1,152 @@
-//
-// usbd_cdc_if: provide USB-CDC user-level functions
-//
-
+#include <string.h>
+#include "usb_device.h"
 #include "usbd_cdc_if.h"
+#ifdef MAVCAN_BRIDGE
+#include "mavcan.h"
+#else
 #include "slcan.h"
-#include "led.h"
+#endif
 #include "system.h"
 #include "error.h"
 
-// Private variables
-static volatile usbrx_buf_t rxbuf = {0};
-static usbtx_buf_t txbuf = {0};
-extern USBD_HandleTypeDef hUsbDeviceFS;
+static usbrx_buf_t rxbuf;
+static usbtx_buf_t txbuf;
+#ifndef MAVCAN_BRIDGE
 static uint8_t slcan_str[SLCAN_MTU];
-static uint8_t slcan_str_index = 0;
+static uint8_t slcan_str_index;
+#endif
 
+static USBD_STA_T cdc_init(void);
+static USBD_STA_T cdc_deinit(void);
+static USBD_STA_T cdc_control(uint8_t command, uint8_t *buffer, uint16_t length);
+static USBD_STA_T cdc_send(uint8_t *buffer, uint16_t length);
+static USBD_STA_T cdc_send_end(uint8_t ep, uint8_t *buffer, uint32_t *length);
+static USBD_STA_T cdc_receive(uint8_t *buffer, uint32_t *length);
 
-// Private function prototypes
-static int8_t CDC_Init_FS(void);
-static int8_t CDC_DeInit_FS(void);
-static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length);
-static int8_t CDC_Receive_FS(uint8_t* pbuf, uint32_t *Len);
-
-
-// CDC Interface
-USBD_CDC_ItfTypeDef USBD_Interface_fops_FS =
-{
-  CDC_Init_FS,
-  CDC_DeInit_FS,
-  CDC_Control_FS,
-  CDC_Receive_FS
+USBD_CDC_INTERFACE_T USBD_CDC_INTERFACE_FS = {
+    "CANable CDC FS",
+    cdc_init,
+    cdc_deinit,
+    cdc_control,
+    cdc_send,
+    cdc_send_end,
+    cdc_receive,
 };
 
-/* Private functions ---------------------------------------------------------*/
-/**
-  * @brief  Initializes the CDC media low layer over the FS USB IP
-  * @retval USBD_OK if all operations are OK else USBD_FAIL
-  */
-static int8_t CDC_Init_FS(void)
+static USBD_STA_T cdc_init(void)
 {
-  USBD_CDC_SetTxBuffer(&hUsbDeviceFS, (uint8_t *)txbuf.buf[txbuf.tail], 0);
-  USBD_CDC_SetRxBuffer(&hUsbDeviceFS, rxbuf.buf[rxbuf.head]);
-  return (USBD_OK);
+    (void)USBD_CDC_ConfigRxBuffer(&gUsbDeviceFS, rxbuf.buf[rxbuf.head]);
+    (void)USBD_CDC_ConfigTxBuffer(&gUsbDeviceFS, txbuf.buf[txbuf.tail], 0U);
+    return USBD_OK;
 }
 
-static int8_t CDC_DeInit_FS(void)
+static USBD_STA_T cdc_deinit(void) { return USBD_OK; }
+
+static USBD_STA_T cdc_control(uint8_t command, uint8_t *buffer, uint16_t length)
 {
-  return (USBD_OK);
+    (void)length;
+    if (command == USBD_CDC_GET_LINE_CODING && buffer != NULL) {
+        buffer[0] = 0x00U;
+        buffer[1] = 0xC2U;
+        buffer[2] = 0x01U;
+        buffer[3] = 0x00U;
+        buffer[4] = 0U;
+        buffer[5] = 0U;
+        buffer[6] = 8U;
+    }
+    return USBD_OK;
 }
 
-/**
-  * @brief  Manage the CDC class requests
-  * @param  cmd: Command code
-  * @param  pbuf: Buffer containing command data (request parameters)
-  * @param  length: Number of data to be sent (in bytes)
-  * @retval Result of the operation: USBD_OK if all operations are OK else USBD_FAIL
-  */
-static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
+static USBD_STA_T cdc_send(uint8_t *buffer, uint16_t length)
 {
-  /* USER CODE BEGIN 5 */
-  switch(cmd)
-  {
-    case CDC_SEND_ENCAPSULATED_COMMAND:
-    break;
-
-    case CDC_GET_ENCAPSULATED_RESPONSE:
-    break;
-
-    case CDC_SET_COMM_FEATURE:
-    break;
-
-    case CDC_GET_COMM_FEATURE:
-    break;
-
-    case CDC_CLEAR_COMM_FEATURE:
-    break;
-
-  /*******************************************************************************/
-  /* Line Coding Structure                                                       */
-  /*-----------------------------------------------------------------------------*/
-  /* Offset | Field       | Size | Value  | Description                          */
-  /* 0      | dwDTERate   |   4  | Number |Data terminal rate, in bits per second*/
-  /* 4      | bCharFormat |   1  | Number | Stop bits                            */
-  /*                                        0 - 1 Stop bit                       */
-  /*                                        1 - 1.5 Stop bits                    */
-  /*                                        2 - 2 Stop bits                      */
-  /* 5      | bParityType |  1   | Number | Parity                               */
-  /*                                        0 - None                             */
-  /*                                        1 - Odd                              */
-  /*                                        2 - Even                             */
-  /*                                        3 - Mark                             */
-  /*                                        4 - Space                            */
-  /* 6      | bDataBits  |   1   | Number Data bits (5, 6, 7, 8 or 16).          */
-  /*******************************************************************************/
-    case CDC_SET_LINE_CODING:
-    break;
-
-    case CDC_GET_LINE_CODING:
-	pbuf[0] = (uint8_t)(115200);
-	pbuf[1] = (uint8_t)(115200 >> 8);
-	pbuf[2] = (uint8_t)(115200 >> 16);
-	pbuf[3] = (uint8_t)(115200 >> 24);
-	pbuf[4] = 0; // stop bits (1)
-	pbuf[5] = 0; // parity (none)
-	pbuf[6] = 8; // number of bits (8)
-	break;
-
-    case CDC_SET_CONTROL_LINE_STATE:
-    break;
-
-    case CDC_SEND_BREAK:
-    break;
-
-  default:
-    break;
-  }
-
-  return (USBD_OK);
+    USBD_CDC_INFO_T *cdc = (USBD_CDC_INFO_T *)gUsbDeviceFS.devClass[gUsbDeviceFS.classID]->classData;
+    if (cdc == NULL || cdc->cdcTx.state != USBD_CDC_XFER_IDLE) return USBD_BUSY;
+    (void)USBD_CDC_ConfigTxBuffer(&gUsbDeviceFS, buffer, length);
+    return USBD_CDC_TxPacket(&gUsbDeviceFS);
 }
 
-/**
- * @brief  CDC_Receive_FS
- *         Data received over USB OUT endpoint are sent over CDC interface
- *         through this function.
- *
- *         @note
- *         This function will block any OUT packet reception on USB endpoint
- *         until exiting this function. If you exit this function before transfer
- *         is complete on CDC interface (ie. using DMA controller) it will result
- *         in receiving more data while previous ones are still not sent.
- *
- * @param  Buf: Buffer of data to be received
- * @param  Len: Number of data received (in bytes)
- * @retval Result of the opeartion: USBD_OK if all operations are OK else USBD_FAIL
- */
-static int8_t CDC_Receive_FS (uint8_t* Buf, uint32_t *Len)
+static USBD_STA_T cdc_send_end(uint8_t ep, uint8_t *buffer, uint32_t *length)
 {
-	// Check for overflow!
-	// If when we increment the head we're going to hit the tail
-	// (if we're filling the last spot in the queue)
-	// FIXME: Use a "full" variable instead of wasting one
-	// spot in the cirbuf as we are doing now
-	if( ((rxbuf.head + 1) % NUM_RX_BUFS) == rxbuf.tail)
-	{
-		error_assert(ERR_FULLBUF_USBRX);
-
-		// Listen again on the same buffer. Old data will be overwritten.
-	    USBD_CDC_SetRxBuffer(&hUsbDeviceFS, rxbuf.buf[rxbuf.head]);
-	    USBD_CDC_ReceivePacket(&hUsbDeviceFS);
-		return HAL_ERROR;
-	}
-	else
-	{
-		// Save off length
-		rxbuf.msglen[rxbuf.head] = *Len;
-		rxbuf.head = (rxbuf.head + 1) % NUM_RX_BUFS;
-
-		// Start listening on next buffer. Previous buffer will be processed in main loop.
-	    USBD_CDC_SetRxBuffer(&hUsbDeviceFS, rxbuf.buf[rxbuf.head]);
-	    USBD_CDC_ReceivePacket(&hUsbDeviceFS);
-	    return (USBD_OK);
-	}
-
+    (void)ep;
+    (void)buffer;
+    (void)length;
+    if (txbuf.active) {
+        txbuf.tail = (uint8_t)((txbuf.tail + 1U) % NUM_TX_BUFS);
+        txbuf.active = 0U;
+    }
+    return USBD_OK;
 }
 
+static USBD_STA_T cdc_receive(uint8_t *buffer, uint32_t *length)
+{
+    uint8_t next = (uint8_t)((rxbuf.head + 1U) % NUM_RX_BUFS);
+    (void)buffer;
+    if (next == rxbuf.tail) {
+        error_assert(ERR_FULLBUF_USBRX);
+    } else {
+        rxbuf.msglen[rxbuf.head] = *length;
+        rxbuf.head = next;
+    }
+    (void)USBD_CDC_ConfigRxBuffer(&gUsbDeviceFS, rxbuf.buf[rxbuf.head]);
+    (void)USBD_CDC_RxPacket(&gUsbDeviceFS);
+    return USBD_OK;
+}
 
-// Process incoming USB-CDC messages from RX FIFO
 void cdc_process(void)
 {
-	system_irq_disable();
-	if(rxbuf.tail != rxbuf.head)
-	{
-		//  Process one whole buffer
-		for (uint32_t i = 0; i < rxbuf.msglen[rxbuf.tail]; i++)
-		{
-		   if (rxbuf.buf[rxbuf.tail][i] == '\r')
-		   {
-			   int8_t result = slcan_parse_str(slcan_str, slcan_str_index);
-
-			   // Success
-			   if(result == 0)
-			   {
-			       uint8_t ack = '\r';
-			       CDC_Transmit_FS(&ack, 1);
-			   }
-			   // Failure
-			   else
-			   {
-			       uint8_t nack = '\a';
-			       CDC_Transmit_FS(&nack, 1);
-			   }
-
-			   slcan_str_index = 0;
-		   }
-		   else
-		   {
-			   // Check for overflow of buffer
-			   if(slcan_str_index >= SLCAN_MTU)
-			   {
-				   // TODO: Return here and discard this CDC buffer?
-				   slcan_str_index = 0;
-			   }
-
-			   slcan_str[slcan_str_index++] = rxbuf.buf[rxbuf.tail][i];
-		   }
-		}
-
-		// Move on to next buffer
-		rxbuf.tail = (rxbuf.tail + 1) % NUM_RX_BUFS;
-	}
-	system_irq_enable();
-
-	cdc_tx_process();
+    uint32_t irq_state = system_irq_save();
+    if (rxbuf.tail != rxbuf.head) {
+        uint8_t tail = rxbuf.tail;
+#ifdef MAVCAN_BRIDGE
+        mavcan_receive(rxbuf.buf[tail], (uint16_t)rxbuf.msglen[tail]);
+#else
+        for (uint32_t i = 0U; i < rxbuf.msglen[tail]; ++i) {
+            uint8_t c = rxbuf.buf[tail][i];
+            if (c == '\r') {
+                uint8_t reply = slcan_parse_str(slcan_str, slcan_str_index) == 0 ? '\r' : '\a';
+                (void)CDC_Transmit_FS(&reply, 1U);
+                slcan_str_index = 0U;
+            } else if (slcan_str_index < SLCAN_MTU) {
+                slcan_str[slcan_str_index++] = c;
+            } else {
+                slcan_str_index = 0U;
+            }
+        }
+#endif
+        rxbuf.tail = (uint8_t)((tail + 1U) % NUM_RX_BUFS);
+    }
+    system_irq_restore(irq_state);
+    cdc_tx_process();
 }
 
-
-/**
- * @brief  CDC_Transmit_FS
- *         Data send over USB IN endpoint are sent over CDC interface
- *         through this function.
- *         @note
- *
- *
- * @param  Buf: Buffer of data to be send
- * @param  Len: Number of data to be send (in bytes)
- * @retval Result of the opeartion: USBD_OK if all operations are OK else USBD_FAIL or USBD_BUSY
- */
-
-uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len)
+uint8_t CDC_Transmit_FS(uint8_t *buffer, uint16_t length)
 {
-    // Ensure message will fit in buffer
-    if(Len > TX_BUF_SIZE)
-    {
-    	return 0;
-    }
+    uint8_t next;
+    uint32_t irq_state;
+    if (buffer == NULL || length > TX_BUF_SIZE) return USBD_FAIL;
 
-    uint8_t next_head = (txbuf.head + 1) % NUM_TX_BUFS;
-    if(next_head == txbuf.tail)
-    {
+    irq_state = system_irq_save();
+    next = (uint8_t)((txbuf.head + 1U) % NUM_TX_BUFS);
+    if (next == txbuf.tail) {
+        system_irq_restore(irq_state);
         error_assert(ERR_USBTX_BUSY);
         return USBD_BUSY;
     }
-
-    // Copy data into the USB TX queue
-    for (uint32_t i=0; i < Len; i++)
-    {
-    	txbuf.buf[txbuf.head][i] = Buf[i];
-    }
-    txbuf.msglen[txbuf.head] = Len;
-    txbuf.head = next_head;
-
+    memcpy(txbuf.buf[txbuf.head], buffer, length);
+    txbuf.msglen[txbuf.head] = length;
+    txbuf.head = next;
+    system_irq_restore(irq_state);
     cdc_tx_process();
     return USBD_OK;
 }
 
-
-// Start the next queued USB CDC packet if the previous one has completed.
 void cdc_tx_process(void)
 {
-    USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef*)hUsbDeviceFS.pClassData;
-    if(hcdc == 0)
-    {
-        return;
-    }
-
-    if(txbuf.active && (hcdc->TxState == 0U))
-    {
-        txbuf.tail = (txbuf.tail + 1) % NUM_TX_BUFS;
-        txbuf.active = 0;
-    }
-
-    if((!txbuf.active) && (txbuf.tail != txbuf.head))
-    {
-        USBD_CDC_SetTxBuffer(&hUsbDeviceFS, (uint8_t *)txbuf.buf[txbuf.tail], txbuf.msglen[txbuf.tail]);
-        if(USBD_CDC_TransmitPacket(&hUsbDeviceFS) == USBD_OK)
-        {
-            txbuf.active = 1;
+    uint32_t irq_state = system_irq_save();
+    if (!txbuf.active && txbuf.tail != txbuf.head) {
+        if (cdc_send(txbuf.buf[txbuf.tail], txbuf.msglen[txbuf.tail]) == USBD_OK) {
+            txbuf.active = 1U;
         }
     }
+    system_irq_restore(irq_state);
 }
